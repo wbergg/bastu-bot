@@ -93,7 +93,8 @@ func main() {
 				// Send the GET request
 				resp, err := http.Get(url)
 				if err != nil {
-					fmt.Println("Error fetching JSON:", err)
+					reply := fmt.Sprintf("Error fetching JSON: %v", err)
+					tg.SendTo(update.Message.Chat.ID, reply)
 					return
 				}
 				defer resp.Body.Close()
@@ -101,7 +102,15 @@ func main() {
 				// Read the response body
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
-					fmt.Println("Error reading body:", err)
+					reply := fmt.Sprintf("Error reading response body: %v", err)
+					tg.SendTo(update.Message.Chat.ID, reply)
+					return
+				}
+
+				// Check for empty response
+				if len(body) == 0 {
+					reply := "Error: received empty JSON response"
+					tg.SendTo(update.Message.Chat.ID, reply)
 					return
 				}
 
@@ -109,7 +118,8 @@ func main() {
 				var temp TempData
 				err = json.Unmarshal(body, &temp)
 				if err != nil {
-					fmt.Println("Error parsing JSON:", err)
+					reply := fmt.Sprintf("Error parsing JSON: %v", err)
+					tg.SendTo(update.Message.Chat.ID, reply)
 					return
 				}
 
