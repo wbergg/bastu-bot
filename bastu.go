@@ -76,7 +76,7 @@ func main() {
 			switch strings.ToLower(update.Message.Command()) {
 
 			// Bastu case
-			case "bastu":
+			case "bastu", "sauna":
 				message := update.Message.CommandArguments()
 
 				if message == "" {
