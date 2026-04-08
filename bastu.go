@@ -14,6 +14,86 @@ import (
 	"github.com/wbergg/telegram"
 )
 
+type Target struct {
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Sensor *int   `json:"sensor,omitempty"`
+}
+
+type Config struct {
+	APIKey        string   `json:"apikey"`
+	Channel       int64    `json:"channel"`
+	LogFile       string   `json:"logfile"`
+	MessageHeader string   `json:"message_header"`
+	Targets       []Target `json:"targets"`
+}
+
+func loadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file: %w", err)
+	}
+
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("apikey is required in config")
+	}
+	if cfg.Channel == 0 {
+		return nil, fmt.Errorf("channel is required in config")
+	}
+	if len(cfg.Targets) == 0 {
+		return nil, fmt.Errorf("at least one target is required in config")
+	}
+	for i, t := range cfg.Targets {
+		if t.Name == "" || t.URL == "" {
+			return nil, fmt.Errorf("target %d: name and url are required", i)
+		}
+	}
+
+	if cfg.MessageHeader == "" {
+		cfg.MessageHeader = "Current BASTU temperature:"
+	}
+
+	return &cfg, nil
+}
+
+func fetchTemperature(target Target) (float64, error) {
+	resp, err := http.Get(target.URL)
+	if err != nil {
+		return 0, fmt.Errorf("fetching %s: %w", target.URL, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("reading response: %w", err)
+	}
+
+	if len(body) == 0 {
+		return 0, fmt.Errorf("empty response from %s", target.URL)
+	}
+
+	var temp TempData
+	if err := json.Unmarshal(body, &temp); err != nil {
+		return 0, fmt.Errorf("parsing JSON: %w", err)
+	}
+
+	sensorIdx := 0
+	if target.Sensor != nil {
+		sensorIdx = *target.Sensor
+	}
+
+	if sensorIdx >= len(temp.Temperatures) {
+		return 0, fmt.Errorf("sensor index %d not found (have %d sensors)", sensorIdx, len(temp.Temperatures))
+	}
+
+	return temp.Temperatures[sensorIdx].Temperature, nil
+}
+
 func setupLogging(logFile string) *os.File {
 	log.SetFormatter(&log.TextFormatter{
 		FullTimestamp: true,
@@ -41,32 +121,28 @@ type TempData struct {
 }
 
 func main() {
-	// Define the flag. The third argument is the default value.
-	channel := flag.Int64("channel", 0, "Channel ID to be used")
-	apikey := flag.String("apikey", "", "Bot API token to be used")
+	configPath := flag.String("config", "config.json", "Path to config file")
 	debugTelegram := flag.Bool("telegram-debug", false, "Turns on debug for telegram")
 	debugStdout := flag.Bool("stdout", false, "Turns on stdout rather than sending to telegram")
 	telegramTest := flag.Bool("telegram-test", false, "Sends a test message to specified telegram channel")
-	logFile := flag.String("logfile", "", "Path to log file (default: stdout)")
 	flag.Parse()
 
+	// Load config
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
 	// Setup logging
-	if f := setupLogging(*logFile); f != nil {
+	if f := setupLogging(cfg.LogFile); f != nil {
 		defer f.Close()
 	}
 
-	log.Infof("Starting program with channel ID: %d", *channel)
-
-	if *channel == 0 {
-		log.Fatal("No channel ID provided. Exiting.")
-	}
-	if *apikey == "" {
-		log.Fatal("No API key provided. Exiting.")
-	}
+	log.Infof("Starting program with channel ID: %d", cfg.Channel)
+	log.Infof("Loaded %d target(s) from config", len(cfg.Targets))
 
 	// Initiate telegram
-
-	tg := telegram.New(*apikey, *channel, *debugTelegram, *debugStdout)
+	tg := telegram.New(cfg.APIKey, cfg.Channel, *debugTelegram, *debugStdout)
 	tg.Init(*debugTelegram)
 	log.Info("Telegram client initialized")
 
@@ -114,61 +190,18 @@ func main() {
 						}
 					}
 
-					// URL of the JSON API
-					url := "http://192.168.1.137"
-
-					// Send the GET request
-					resp, err := http.Get(url)
-					if err != nil {
-						log.Errorf("Error fetching JSON from %s: %v", url, err)
-						reply := fmt.Sprintf("Error fetching JSON: %v", err)
-						tg.SendTo(update.Message.Chat.ID, reply)
-						continue
+					var sb strings.Builder
+					fmt.Fprintln(&sb, cfg.MessageHeader)
+					for _, target := range cfg.Targets {
+						temp, err := fetchTemperature(target)
+						if err != nil {
+							log.Errorf("Error fetching %s: %v", target.Name, err)
+							fmt.Fprintf(&sb, "%s: error (%v)\n", target.Name, err)
+							continue
+						}
+						fmt.Fprintf(&sb, "%s: %.2f°C\n", target.Name, temp)
 					}
-
-					// Read the response body
-					body, err := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					if err != nil {
-						log.Errorf("Error reading response body: %v", err)
-						reply := fmt.Sprintf("Error reading response body: %v", err)
-						tg.SendTo(update.Message.Chat.ID, reply)
-						continue
-					}
-
-					// Check for empty response
-					if len(body) == 0 {
-						log.Error("Received empty JSON response")
-						reply := "Error: received empty JSON response"
-						tg.SendTo(update.Message.Chat.ID, reply)
-						continue
-					}
-
-					// Parse the JSON
-					var temp TempData
-					err = json.Unmarshal(body, &temp)
-					if err != nil {
-						log.Errorf("Error parsing JSON: %v, body: %s", err, string(body))
-						reply := fmt.Sprintf("Error parsing JSON: %v", err)
-						tg.SendTo(update.Message.Chat.ID, reply)
-						continue
-					}
-
-					if len(temp.Temperatures) == 0 {
-						log.Error("No temperature sensors in response")
-						tg.SendTo(update.Message.Chat.ID, "Error: no temperature sensors available")
-						continue
-					}
-
-					// Only read from sensor X
-					reply := fmt.Sprintf("Current BASTU temperature: %.2f°C\n", temp.Temperatures[0].Temperature)
-					tg.SendTo(update.Message.Chat.ID, reply)
-
-					// Loop through all sensors
-					//for _, t := range temp.Temperatures {
-					//	reply := fmt.Sprintf("Sensor %d: %.2f°C\n", t.Sensor, t.Temperature)
-					//	tg.SendTo(update.Message.Chat.ID, reply)
-					//}
+					tg.SendTo(update.Message.Chat.ID, sb.String())
 
 				default:
 					// Unknown command
