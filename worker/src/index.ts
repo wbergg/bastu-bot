@@ -77,8 +77,47 @@ function parseCommand(text: string): string | null {
 	return token.slice(1).split("@")[0].toLowerCase();
 }
 
+/** Parse the TARGETS env var into Target objects, or null if invalid. */
+function parseTargets(env: Env): Target[] | null {
+	try {
+		return JSON.parse(env.TARGETS) as Target[];
+	} catch (e) {
+		console.error("invalid TARGETS config:", e);
+		return null;
+	}
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
+		const url = new URL(request.url);
+
+		// GET /temperatures: return temperatures as a JSON array.
+		if (request.method === "GET" && url.pathname === "/temperatures") {
+			const targets = parseTargets(env);
+			if (!targets) {
+				return new Response("invalid TARGETS config", { status: 500 });
+			}
+
+			const results = await Promise.all(
+				targets.map(async (target) => {
+					try {
+						return { name: target.name, temperature: await fetchTemperature(target) };
+					} catch (e) {
+						console.error(`Error fetching ${target.name}:`, e);
+						return {
+							name: target.name,
+							temperature: null,
+							error: e instanceof Error ? e.message : String(e),
+						};
+					}
+				}),
+			);
+
+			return new Response(JSON.stringify(results), {
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		if (request.method !== "POST") {
 			return new Response("ok", { status: 200 });
 		}
@@ -108,11 +147,8 @@ export default {
 			return new Response("ok"); // not a command we handle
 		}
 
-		let targets: Target[];
-		try {
-			targets = JSON.parse(env.TARGETS) as Target[];
-		} catch (e) {
-			console.error("invalid TARGETS config:", e);
+		const targets = parseTargets(env);
+		if (!targets) {
 			return new Response("ok");
 		}
 
