@@ -6,13 +6,31 @@
 	"observability": {
 		"enabled": true
 	},
+	// Poll sensors every 2 minutes for LIT / READY / cooling-down alerts.
+	"triggers": {
+		"crons": ["*/2 * * * *"]
+	},
+	// Per-target alert state. Create with:
+	//   wrangler kv namespace create STATE
+	// then paste the printed id below.
+	"kv_namespaces": [
+		{
+			"binding": "STATE",
+			"id": "<your-kv-namespace-id>"
+		}
+	],
 	"vars": {
 		// Public sensor endpoints. Workers run on the edge and cannot reach
 		// LAN addresses, so these URLs must be publicly reachable.
 		"TARGETS": "[{\"name\":\"Sauna1\",\"url\":\"http://example.com/temperature\"},{\"name\":\"Sauna2\",\"url\":\"http://example.org:15000\"}]",
-		"MESSAGE_HEADER": "Current BASTU temperature:"
+		"MESSAGE_HEADER": "Current BASTU temperature:",
+		// Alert thresholds in °C.
+		"LIT_TEMP": "40",
+		"READY_TEMP": "70",
+		"RESET_TEMP": "30"
 	}
 	// Secrets (not stored here):
 	//   wrangler secret put BOT_TOKEN
 	//   wrangler secret put WEBHOOK_SECRET   (optional but recommended)
+	//   wrangler secret put ALERT_CHAT_ID    (chat for scheduled alerts)
 }
